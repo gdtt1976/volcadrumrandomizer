@@ -2,9 +2,22 @@
 <html>
 
 <head>
-    <title>synthmata: Volca Drum</title>
+    <title>VMZ Volca Drum editor</title>
     <link href="https://fonts.googleapis.com/css?family=Montserrat:400,700" rel="stylesheet" />
     <link href="./style.css" rel="stylesheet" />
+    <style>
+        #patternMaker .seq-transport { display:flex; align-items:center; gap:0.5em; flex-wrap:wrap; margin-bottom:0.8em; }
+        #patternMaker .seq-transport button, #patternMaker .seq-transport input { font-family:inherit; font-size:1em; }
+        #patternMaker .seq-transport button { padding:0.4em 0.9em; cursor:pointer; }
+        #patternMaker .seq-grid { overflow-x:auto; }
+        #patternMaker .seq-row { display:flex; align-items:center; gap:3px; margin-bottom:3px; }
+        #patternMaker .seq-rowlabel { width:4.5em; font-size:0.8em; flex:0 0 auto; }
+        #patternMaker .seq-cell { width:26px; height:26px; flex:0 0 auto; border:1px solid #aaa; background:#f4f4f4; border-radius:3px; cursor:pointer; padding:0; }
+        #patternMaker .seq-cell.seq-beat { border-color:#555; }
+        #patternMaker .seq-cell.on { background:#e0562d; border-color:#b8431f; }
+        #patternMaker .seq-cell.playing { outline:2px solid #2d7be0; outline-offset:-1px; }
+        #patternMaker .seq-cell.on.playing { background:#ff7a4d; }
+    </style>
     <script src="./ccynthmata.js" type="text/javascript"></script>
     <script src="./init_patch.js" type="text/javascript"></script>
     <script>
@@ -26,6 +39,7 @@
                     }
                 }); 
             cynth.init();
+            buildSequencer();
         }
         let showHideInstructions = ()=>{
             let instructions = document.getElementById("instructions");
@@ -90,16 +104,175 @@
             }
         };
         // ---------------------------------------------------------------------
+
+        // --- Pattern maker / step sequencer ----------------------------------
+        const SEQ_STEPS = 16;
+        const SEQ_PARTS = 6;
+        const SEQ_TRIGGER_NOTE = 60;   // note-on that fires a part; pitch is set per-part in the editor
+        const SEQ_VELOCITY = 100;
+        const SEQ_LOOKAHEAD_MS = 25;
+        const SEQ_SCHEDULE_AHEAD = 0.12;
+        const SEQ_GATE = 0.5;          // note length as fraction of a step
+        let seqGrid = [];
+        let seqCells = [];
+        let seqTempo = 120;
+        let seqPlaying = false;
+        let seqCurrentStep = 0;
+        let seqAudioCtx = null;
+        let seqNextStepTime = 0;
+        let seqTimer = null;
+
+        let buildSequencer = () => {
+            let root = document.getElementById("patternMaker");
+            if (!root) return;
+            seqGrid = Array.from({ length: SEQ_PARTS }, () => Array(SEQ_STEPS).fill(false));
+
+            let transport = document.createElement("div");
+            transport.className = "seq-transport";
+
+            let playBtn = document.createElement("button");
+            playBtn.type = "button";
+            playBtn.id = "seqPlayBtn";
+            playBtn.textContent = String.fromCodePoint(0x25B6) + " Play";
+            playBtn.onclick = () => toggleSeqPlay();
+
+            let tempoLabel = document.createElement("label");
+            tempoLabel.textContent = "Tempo ";
+            let tempoInput = document.createElement("input");
+            tempoInput.type = "number"; tempoInput.min = "40"; tempoInput.max = "300";
+            tempoInput.value = seqTempo; tempoInput.style.width = "4.5em";
+            tempoInput.oninput = () => { seqTempo = Number(tempoInput.value) || 120; };
+
+            let randBtn = document.createElement("button");
+            randBtn.type = "button";
+            randBtn.textContent = String.fromCodePoint(0x1F3B2) + " Randomize Pattern";
+            randBtn.onclick = () => randomizePattern();
+
+            let clearBtn = document.createElement("button");
+            clearBtn.type = "button";
+            clearBtn.textContent = "Clear";
+            clearBtn.onclick = () => clearPattern();
+
+            let densityLabel = document.createElement("label");
+            densityLabel.textContent = "Density ";
+            let densityInput = document.createElement("input");
+            densityInput.type = "range"; densityInput.min = "0"; densityInput.max = "100";
+            densityInput.value = "35"; densityInput.id = "seqDensity";
+
+            transport.append(playBtn, tempoLabel, tempoInput, randBtn, clearBtn, densityLabel, densityInput);
+            root.appendChild(transport);
+
+            let grid = document.createElement("div");
+            grid.className = "seq-grid";
+            for (let p = 0; p < SEQ_PARTS; p++) {
+                let rowCells = [];
+                let row = document.createElement("div");
+                row.className = "seq-row";
+                let label = document.createElement("span");
+                label.className = "seq-rowlabel";
+                label.textContent = "Part " + (p + 1);
+                row.appendChild(label);
+                for (let s = 0; s < SEQ_STEPS; s++) {
+                    let cell = document.createElement("button");
+                    cell.type = "button";
+                    cell.className = "seq-cell" + (s % 4 === 0 ? " seq-beat" : "");
+                    let pp = p, ss = s;
+                    cell.onclick = () => {
+                        seqGrid[pp][ss] = !seqGrid[pp][ss];
+                        cell.classList.toggle("on", seqGrid[pp][ss]);
+                    };
+                    row.appendChild(cell);
+                    rowCells.push(cell);
+                }
+                grid.appendChild(row);
+                seqCells.push(rowCells);
+            }
+            root.appendChild(grid);
+        };
+
+        let clearPattern = () => {
+            for (let p = 0; p < SEQ_PARTS; p++)
+                for (let s = 0; s < SEQ_STEPS; s++) {
+                    seqGrid[p][s] = false;
+                    seqCells[p][s].classList.remove("on");
+                }
+        };
+
+        let randomizePattern = () => {
+            let el = document.getElementById("seqDensity");
+            let density = (el ? Number(el.value) : 35) / 100;
+            for (let p = 0; p < SEQ_PARTS; p++)
+                for (let s = 0; s < SEQ_STEPS; s++) {
+                    let on = Math.random() < density;
+                    seqGrid[p][s] = on;
+                    seqCells[p][s].classList.toggle("on", on);
+                }
+        };
+
+        let clearPlayhead = () => {
+            for (let p = 0; p < SEQ_PARTS; p++)
+                for (let s = 0; s < SEQ_STEPS; s++)
+                    seqCells[p][s].classList.remove("playing");
+        };
+
+        let toggleSeqPlay = () => {
+            let btn = document.getElementById("seqPlayBtn");
+            if (seqPlaying) {
+                seqPlaying = false;
+                if (seqTimer) clearInterval(seqTimer);
+                seqTimer = null;
+                clearPlayhead();
+                if (btn) btn.textContent = String.fromCodePoint(0x25B6) + " Play";
+            } else {
+                if (!seqAudioCtx) seqAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                seqAudioCtx.resume();
+                seqPlaying = true;
+                seqCurrentStep = 0;
+                seqNextStepTime = seqAudioCtx.currentTime + 0.06;
+                if (btn) btn.textContent = String.fromCodePoint(0x25A0) + " Stop";
+                seqTimer = setInterval(seqScheduler, SEQ_LOOKAHEAD_MS);
+            }
+        };
+
+        let seqScheduler = () => {
+            let secondsPerStep = 60.0 / seqTempo / 4;   // 16th-note steps
+            while (seqNextStepTime < seqAudioCtx.currentTime + SEQ_SCHEDULE_AHEAD) {
+                scheduleStep(seqCurrentStep, seqNextStepTime, secondsPerStep);
+                seqNextStepTime += secondsPerStep;
+                seqCurrentStep = (seqCurrentStep + 1) % SEQ_STEPS;
+            }
+        };
+
+        let scheduleStep = (step, time, secondsPerStep) => {
+            let port = (typeof cynth !== "undefined") ? cynth.selectedMidiPort : null;
+            let deltaMs = (time - seqAudioCtx.currentTime) * 1000;
+            let sendAt = performance.now() + deltaMs;
+            let gateMs = secondsPerStep * 1000 * SEQ_GATE;
+
+            if (port) {
+                for (let p = 0; p < SEQ_PARTS; p++) {
+                    if (seqGrid[p][step]) {
+                        port.send([0x90 | (p & 0x0f), SEQ_TRIGGER_NOTE, SEQ_VELOCITY], sendAt);
+                        port.send([0x80 | (p & 0x0f), SEQ_TRIGGER_NOTE, 0], sendAt + gateMs);
+                    }
+                }
+            }
+            setTimeout(() => {
+                if (!seqPlaying) return;
+                clearPlayhead();
+                for (let p = 0; p < SEQ_PARTS; p++) seqCells[p][step].classList.add("playing");
+            }, Math.max(0, deltaMs));
+        };
+        // ---------------------------------------------------------------------
     </script>
 </head>
 <body onload="init()">
     <div id="title-head">
-            <span>synthmata</span>
+            <span>VMZ Volca Drum editor</span>
     </div>
     <div id="title-byline">
-        <span>by
-            <a href="http://oscillatorsink.com">oscillatorsink</a>
-        </span>
+        <span>based on
+            <a href="http://oscillatorsink.com">Oscillatorsink</a>'s great Synthmata editor.</span>
     </div>
     <div id="subtitle-head">
         <span>free online patch editor for the Volca Drum
@@ -159,6 +332,10 @@
                     &#127922; Randomize All
                 </button>
             </div>
+        </div>
+        <div class="controlpanel">
+            <h2>Pattern</h2>
+            <div id="patternMaker"></div>
         </div>
         <div class="controlpanel">
             <!-- BEGIN: Part 1-->
