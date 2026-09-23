@@ -185,10 +185,15 @@
             clearBtn.textContent = "Clear";
             clearBtn.onclick = () => clearPattern();
 
-            let exportBtn = document.createElement("button");
-            exportBtn.type = "button";
-            exportBtn.textContent = "Export .mid";
-            exportBtn.onclick = () => exportPatternMidi();
+            let exportSingleBtn = document.createElement("button");
+            exportSingleBtn.type = "button";
+            exportSingleBtn.textContent = "Export .mid (single-ch)";
+            exportSingleBtn.onclick = () => exportPatternSingle();
+
+            let exportSplitBtn = document.createElement("button");
+            exportSplitBtn.type = "button";
+            exportSplitBtn.textContent = "Export .mid (split)";
+            exportSplitBtn.onclick = () => exportPatternSplit();
 
             let densityLabel = document.createElement("label");
             densityLabel.textContent = "Density ";
@@ -196,7 +201,7 @@
             densityInput.type = "range"; densityInput.min = "0"; densityInput.max = "100";
             densityInput.value = "35"; densityInput.id = "seqDensity";
 
-            transport.append(playBtn, tempoLabel, tempoInput, modeLabel, modeSelect, chLabel, chInput, randBtn, clearBtn, exportBtn, densityLabel, densityInput);
+            transport.append(playBtn, tempoLabel, tempoInput, modeLabel, modeSelect, chLabel, chInput, randBtn, clearBtn, exportSingleBtn, exportSplitBtn, densityLabel, densityInput);
             root.appendChild(transport);
 
             let grid = document.createElement("div");
@@ -262,6 +267,8 @@
                 }
         };
 
+        const SEQ_PPQ = 480;
+
         let seqWriteVarLen = (value) => {
             let buffer = value & 0x7f;
             let bytes = [];
@@ -270,52 +277,88 @@
             return bytes;
         };
 
-        let exportPatternMidi = () => {
-            const PPQ = 480;
-            const stepTicks = PPQ / 4;                          // 16th-note steps
-            const gateTicks = Math.max(1, Math.floor(stepTicks * SEQ_GATE));
+        let seqTempoMeta = () => {
+            let us = Math.round(60000000 / seqTempo);
+            return [0x00,0xFF,0x51,0x03,(us>>16)&0xff,(us>>8)&0xff,us&0xff, 0x00,0xFF,0x58,0x04,0x04,0x02,0x18,0x08];
+        };
 
-            let events = [];
-            for (let s = 0; s < SEQ_STEPS; s++) {
-                for (let p = 0; p < SEQ_PARTS; p++) {
-                    if (seqGrid[p][s]) {
-                        let ch = seqChannel - 1;              // export is always a single-channel drum clip
-                        let note = SEQ_PART_NOTES[p];         // C3-A3 -> parts 1-6, one distinct note each
-                        events.push({ tick: s * stepTicks, on: 1, ch: ch, note: note });
-                        events.push({ tick: s * stepTicks + gateTicks, on: 0, ch: ch, note: note });
-                    }
-                }
-            }
-            if (events.length === 0) { alert("Pattern is empty - add some steps first."); return; }
+        let seqTrackName = (name) => {
+            let chars = [];
+            for (let i = 0; i < name.length; i++) chars.push(name.charCodeAt(i) & 0x7f);
+            return [0x00,0xFF,0x03, ...seqWriteVarLen(chars.length), ...chars];
+        };
+
+        let seqEncodeEvents = (events) => {
             events.sort((a, b) => a.tick - b.tick || a.on - b.on);
-
-            let track = [];
-            let usPerQuarter = Math.round(60000000 / seqTempo);
-            track.push(0x00, 0xFF, 0x51, 0x03, (usPerQuarter >> 16) & 0xff, (usPerQuarter >> 8) & 0xff, usPerQuarter & 0xff);
-            track.push(0x00, 0xFF, 0x58, 0x04, 0x04, 0x02, 0x18, 0x08);   // 4/4
-            let last = 0;
+            let out = [], last = 0;
             events.forEach((e) => {
-                seqWriteVarLen(e.tick - last).forEach((b) => track.push(b));
+                seqWriteVarLen(e.tick - last).forEach((b) => out.push(b));
                 last = e.tick;
-                track.push(((e.on ? 0x90 : 0x80) | (e.ch & 0x0f)), e.note & 0x7f, e.on ? (SEQ_VELOCITY & 0x7f) : 0x00);
+                out.push(((e.on ? 0x90 : 0x80) | (e.ch & 0x0f)), e.note & 0x7f, e.on ? (SEQ_VELOCITY & 0x7f) : 0x00);
             });
-            track.push(0x00, 0xFF, 0x2F, 0x00);                 // end of track
+            return out;
+        };
 
-            let len = track.length;
-            let header = [0x4D,0x54,0x68,0x64, 0,0,0,6, 0,0, 0,1, (PPQ>>8)&0xff, PPQ&0xff];
-            let mtrk = [0x4D,0x54,0x72,0x6B, (len>>24)&0xff,(len>>16)&0xff,(len>>8)&0xff,len&0xff];
-            let bytes = new Uint8Array([...header, ...mtrk, ...track]);
-            let blob = new Blob([bytes], { type: "audio/midi" });
-
+        let seqDownloadMidi = (tracks, suffix) => {
+            let format = tracks.length > 1 ? 1 : 0;
+            let out = [0x4D,0x54,0x68,0x64, 0,0,0,6, 0,format, (tracks.length>>8)&0xff, tracks.length&0xff, (SEQ_PPQ>>8)&0xff, SEQ_PPQ&0xff];
+            tracks.forEach((t) => {
+                let len = t.length;
+                out.push(0x4D,0x54,0x72,0x6B, (len>>24)&0xff,(len>>16)&0xff,(len>>8)&0xff,len&0xff);
+                t.forEach((b) => out.push(b));
+            });
+            let blob = new Blob([new Uint8Array(out)], { type: "audio/midi" });
             let nameField = document.getElementById("ccynthmataPatchName");
             let base = (nameField && nameField.value.trim()) ? nameField.value.trim().replace(/[^a-z0-9_-]+/gi, "_") : "volca-pattern";
             let a = document.createElement("a");
             a.href = URL.createObjectURL(blob);
-            a.download = base + ".mid";
+            a.download = base + suffix + ".mid";
             document.body.appendChild(a);
             a.click();
             document.body.removeChild(a);
             setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+        };
+
+        let seqPatternHasHits = () => {
+            for (let p = 0; p < SEQ_PARTS; p++)
+                for (let s = 0; s < SEQ_STEPS; s++)
+                    if (seqGrid[p][s]) return true;
+            return false;
+        };
+
+        // Single-channel clip: one distinct note per part (C3-A3) on channel Ch.
+        let exportPatternSingle = () => {
+            if (!seqPatternHasHits()) { alert("Pattern is empty - add some steps first."); return; }
+            const stepTicks = SEQ_PPQ / 4;
+            const gateTicks = Math.max(1, Math.floor(stepTicks * SEQ_GATE));
+            let events = [];
+            for (let s = 0; s < SEQ_STEPS; s++)
+                for (let p = 0; p < SEQ_PARTS; p++)
+                    if (seqGrid[p][s]) {
+                        let ch = seqChannel - 1, note = SEQ_PART_NOTES[p];
+                        events.push({ tick: s * stepTicks, on: 1, ch: ch, note: note });
+                        events.push({ tick: s * stepTicks + gateTicks, on: 0, ch: ch, note: note });
+                    }
+            let track = [...seqTempoMeta(), ...seqEncodeEvents(events), 0x00,0xFF,0x2F,0x00];
+            seqDownloadMidi([track], "-single");
+        };
+
+        // Split clip: Format 1, one named track per part, each on its own channel (1-6), note 60.
+        let exportPatternSplit = () => {
+            if (!seqPatternHasHits()) { alert("Pattern is empty - add some steps first."); return; }
+            const stepTicks = SEQ_PPQ / 4;
+            const gateTicks = Math.max(1, Math.floor(stepTicks * SEQ_GATE));
+            let tracks = [[...seqTempoMeta(), 0x00,0xFF,0x2F,0x00]];   // conductor track
+            for (let p = 0; p < SEQ_PARTS; p++) {
+                let events = [];
+                for (let s = 0; s < SEQ_STEPS; s++)
+                    if (seqGrid[p][s]) {
+                        events.push({ tick: s * stepTicks, on: 1, ch: p, note: SEQ_SPLIT_NOTE });
+                        events.push({ tick: s * stepTicks + gateTicks, on: 0, ch: p, note: SEQ_SPLIT_NOTE });
+                    }
+                tracks.push([...seqTrackName("Part " + (p + 1) + " (ch" + (p + 1) + ")"), ...seqEncodeEvents(events), 0x00,0xFF,0x2F,0x00]);
+            }
+            seqDownloadMidi(tracks, "-split");
         };
 
         let clearPlayhead = () => {
