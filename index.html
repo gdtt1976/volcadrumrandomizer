@@ -173,9 +173,7 @@
             chInput.value = seqChannel; chInput.style.width = "3.5em";
             chInput.oninput = () => { seqChannel = Math.min(16, Math.max(1, Number(chInput.value) || 1)); };
 
-            let syncChVis = () => { chLabel.style.display = chInput.style.display = (modeSelect.value === "single" ? "" : "none"); };
-            modeSelect.onchange = () => { seqMode = modeSelect.value; syncChVis(); };
-            syncChVis();
+            modeSelect.onchange = () => { seqMode = modeSelect.value; };
 
             let randBtn = document.createElement("button");
             randBtn.type = "button";
@@ -281,8 +279,8 @@
             for (let s = 0; s < SEQ_STEPS; s++) {
                 for (let p = 0; p < SEQ_PARTS; p++) {
                     if (seqGrid[p][s]) {
-                        let ch = (seqMode === "split") ? p : (seqChannel - 1);
-                        let note = (seqMode === "split") ? SEQ_SPLIT_NOTE : SEQ_PART_NOTES[p];
+                        let ch = seqChannel - 1;              // export is always a single-channel drum clip
+                        let note = SEQ_PART_NOTES[p];         // C3-A3 -> parts 1-6, one distinct note each
                         events.push({ tick: s * stepTicks, on: 1, ch: ch, note: note });
                         events.push({ tick: s * stepTicks + gateTicks, on: 0, ch: ch, note: note });
                     }
