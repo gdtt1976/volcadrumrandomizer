@@ -7,7 +7,7 @@
     <link href="./style.css" rel="stylesheet" />
     <style>
         #patternMaker .seq-transport { display:flex; align-items:center; gap:0.5em; flex-wrap:wrap; margin-bottom:0.8em; }
-        #patternMaker .seq-transport button, #patternMaker .seq-transport input { font-family:inherit; font-size:1em; }
+        #patternMaker .seq-transport button, #patternMaker .seq-transport input, #patternMaker .seq-transport select { font-family:inherit; font-size:1em; }
         #patternMaker .seq-transport button { padding:0.4em 0.9em; cursor:pointer; }
         #patternMaker .seq-grid { overflow-x:auto; }
         #patternMaker .seq-row { display:flex; align-items:center; gap:3px; margin-bottom:3px; }
@@ -113,8 +113,13 @@
         // --- Pattern maker / step sequencer ----------------------------------
         const SEQ_STEPS = 16;
         const SEQ_PARTS = 6;
-        const SEQ_TRIGGER_NOTE = 60;   // note-on that fires a part; pitch is set per-part in the editor
+        // Volca SPLIT mode: each part on its own channel (1-6), any note triggers it.
+        // Volca SINGLE-channel mode: all parts on one channel, selected by note C3 D3 E3 F3 G3 A3.
+        const SEQ_SPLIT_NOTE = 60;                        // split mode: note sent on each part's channel
+        const SEQ_PART_NOTES = [60, 62, 64, 65, 67, 69];  // single mode: C3 D3 E3 F3 G3 A3 -> parts 1-6
         const SEQ_VELOCITY = 100;
+        let seqMode = "single";                           // "single" or "split"
+        let seqChannel = 1;                               // single-mode MIDI channel (1-16)
         const SEQ_LOOKAHEAD_MS = 25;
         const SEQ_SCHEDULE_AHEAD = 0.12;
         const SEQ_GATE = 0.5;          // note length as fraction of a step
@@ -153,6 +158,25 @@
             tempoInput.value = seqTempo; tempoInput.style.width = "4.5em";
             tempoInput.oninput = () => { seqTempo = Number(tempoInput.value) || 120; };
 
+            let modeLabel = document.createElement("label");
+            modeLabel.textContent = "Mode ";
+            let modeSelect = document.createElement("select");
+            [["single", "Single ch (C3-A3)"], ["split", "Split (ch 1-6)"]].forEach(([v, t]) => {
+                let o = document.createElement("option"); o.value = v; o.textContent = t; modeSelect.appendChild(o);
+            });
+            modeSelect.value = seqMode;
+
+            let chLabel = document.createElement("label");
+            chLabel.textContent = "Ch ";
+            let chInput = document.createElement("input");
+            chInput.type = "number"; chInput.min = "1"; chInput.max = "16";
+            chInput.value = seqChannel; chInput.style.width = "3.5em";
+            chInput.oninput = () => { seqChannel = Math.min(16, Math.max(1, Number(chInput.value) || 1)); };
+
+            let syncChVis = () => { chLabel.style.display = chInput.style.display = (modeSelect.value === "single" ? "" : "none"); };
+            modeSelect.onchange = () => { seqMode = modeSelect.value; syncChVis(); };
+            syncChVis();
+
             let randBtn = document.createElement("button");
             randBtn.type = "button";
             randBtn.textContent = String.fromCodePoint(0x1F3B2) + " Randomize Pattern";
@@ -163,13 +187,18 @@
             clearBtn.textContent = "Clear";
             clearBtn.onclick = () => clearPattern();
 
+            let exportBtn = document.createElement("button");
+            exportBtn.type = "button";
+            exportBtn.textContent = "Export .mid";
+            exportBtn.onclick = () => exportPatternMidi();
+
             let densityLabel = document.createElement("label");
             densityLabel.textContent = "Density ";
             let densityInput = document.createElement("input");
             densityInput.type = "range"; densityInput.min = "0"; densityInput.max = "100";
             densityInput.value = "35"; densityInput.id = "seqDensity";
 
-            transport.append(playBtn, tempoLabel, tempoInput, randBtn, clearBtn, densityLabel, densityInput);
+            transport.append(playBtn, tempoLabel, tempoInput, modeLabel, modeSelect, chLabel, chInput, randBtn, clearBtn, exportBtn, densityLabel, densityInput);
             root.appendChild(transport);
 
             let grid = document.createElement("div");
@@ -235,6 +264,62 @@
                 }
         };
 
+        let seqWriteVarLen = (value) => {
+            let buffer = value & 0x7f;
+            let bytes = [];
+            while ((value >>= 7)) { buffer <<= 8; buffer |= ((value & 0x7f) | 0x80); }
+            while (true) { bytes.push(buffer & 0xff); if (buffer & 0x80) buffer >>= 8; else break; }
+            return bytes;
+        };
+
+        let exportPatternMidi = () => {
+            const PPQ = 480;
+            const stepTicks = PPQ / 4;                          // 16th-note steps
+            const gateTicks = Math.max(1, Math.floor(stepTicks * SEQ_GATE));
+
+            let events = [];
+            for (let s = 0; s < SEQ_STEPS; s++) {
+                for (let p = 0; p < SEQ_PARTS; p++) {
+                    if (seqGrid[p][s]) {
+                        let ch = (seqMode === "split") ? p : (seqChannel - 1);
+                        let note = (seqMode === "split") ? SEQ_SPLIT_NOTE : SEQ_PART_NOTES[p];
+                        events.push({ tick: s * stepTicks, on: 1, ch: ch, note: note });
+                        events.push({ tick: s * stepTicks + gateTicks, on: 0, ch: ch, note: note });
+                    }
+                }
+            }
+            if (events.length === 0) { alert("Pattern is empty - add some steps first."); return; }
+            events.sort((a, b) => a.tick - b.tick || a.on - b.on);
+
+            let track = [];
+            let usPerQuarter = Math.round(60000000 / seqTempo);
+            track.push(0x00, 0xFF, 0x51, 0x03, (usPerQuarter >> 16) & 0xff, (usPerQuarter >> 8) & 0xff, usPerQuarter & 0xff);
+            track.push(0x00, 0xFF, 0x58, 0x04, 0x04, 0x02, 0x18, 0x08);   // 4/4
+            let last = 0;
+            events.forEach((e) => {
+                seqWriteVarLen(e.tick - last).forEach((b) => track.push(b));
+                last = e.tick;
+                track.push(((e.on ? 0x90 : 0x80) | (e.ch & 0x0f)), e.note & 0x7f, e.on ? (SEQ_VELOCITY & 0x7f) : 0x00);
+            });
+            track.push(0x00, 0xFF, 0x2F, 0x00);                 // end of track
+
+            let len = track.length;
+            let header = [0x4D,0x54,0x68,0x64, 0,0,0,6, 0,0, 0,1, (PPQ>>8)&0xff, PPQ&0xff];
+            let mtrk = [0x4D,0x54,0x72,0x6B, (len>>24)&0xff,(len>>16)&0xff,(len>>8)&0xff,len&0xff];
+            let bytes = new Uint8Array([...header, ...mtrk, ...track]);
+            let blob = new Blob([bytes], { type: "audio/midi" });
+
+            let nameField = document.getElementById("ccynthmataPatchName");
+            let base = (nameField && nameField.value.trim()) ? nameField.value.trim().replace(/[^a-z0-9_-]+/gi, "_") : "volca-pattern";
+            let a = document.createElement("a");
+            a.href = URL.createObjectURL(blob);
+            a.download = base + ".mid";
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+        };
+
         let clearPlayhead = () => {
             for (let p = 0; p < SEQ_PARTS; p++)
                 for (let s = 0; s < SEQ_STEPS; s++)
@@ -278,8 +363,10 @@
             if (port) {
                 for (let p = 0; p < SEQ_PARTS; p++) {
                     if (seqGrid[p][step]) {
-                        port.send([0x90 | (p & 0x0f), SEQ_TRIGGER_NOTE, SEQ_VELOCITY], sendAt);
-                        port.send([0x80 | (p & 0x0f), SEQ_TRIGGER_NOTE, 0], sendAt + gateMs);
+                        let ch = (seqMode === "split") ? p : (seqChannel - 1);
+                        let note = (seqMode === "split") ? SEQ_SPLIT_NOTE : SEQ_PART_NOTES[p];
+                        port.send([0x90 | (ch & 0x0f), note, SEQ_VELOCITY], sendAt);
+                        port.send([0x80 | (ch & 0x0f), note, 0], sendAt + gateMs);
                     }
                 }
             }
