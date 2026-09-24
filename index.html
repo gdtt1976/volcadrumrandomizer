@@ -26,6 +26,8 @@
         #patternMaker .seq-motion-row { display:flex; align-items:flex-end; gap:3px; }
         #patternMaker .seq-motion-slider { width:26px; height:50px; flex:0 0 auto; margin:0; padding:0; writing-mode:vertical-lr; direction:rtl; cursor:pointer; }
         #patternMaker .seq-motion-slider.seq-beat { outline:1px solid #cbb; outline-offset:1px; }
+        #patternMaker .seq-rndmotion { display:inline-flex; align-items:center; gap:0.35em; flex-wrap:wrap; }
+        #patternMaker .seq-rndmotion .seq-mr-opt { font-size:0.8em; }
     </style>
     <script src="./ccynthmata.js" type="text/javascript"></script>
     <script src="./init_patch.js" type="text/javascript"></script>
@@ -132,7 +134,8 @@
         const SEQ_GATE = 0.5;          // note length as fraction of a step
         let seqGrid = [];
         let seqCells = [];
-        let seqMotion = [];            // per part: {on, cc, values:[16], _last}
+        let seqMotion = [];            // per part: {on, cc, values:[16], _last, sliders}
+        let seqMotionRnd = { smooth: false, min: 0, max: 127, onlyEnabled: false };
         const SEQ_MOTION_PARAMS = [
             {label:"Level 1", cc:17}, {label:"Level 2", cc:18},
             {label:"Pitch 1", cc:26}, {label:"Pitch 2", cc:27},
@@ -155,7 +158,7 @@
             let root = document.getElementById("patternMaker");
             if (!root) return;
             seqGrid = Array.from({ length: SEQ_PARTS }, () => Array(SEQ_STEPS).fill(false));
-            seqMotion = Array.from({ length: SEQ_PARTS }, () => ({ on: false, cc: 17, values: Array(SEQ_STEPS).fill(64), _last: null }));
+            seqMotion = Array.from({ length: SEQ_PARTS }, () => ({ on: false, cc: 17, values: Array(SEQ_STEPS).fill(64), _last: null, sliders: [] }));
 
             let status = document.createElement("div");
             status.className = "seq-status";
@@ -200,6 +203,32 @@
             randBtn.textContent = String.fromCodePoint(0x1F3B2) + " Randomize Pattern";
             randBtn.onclick = () => randomizePattern();
 
+            let randMotionBtn = document.createElement("button");
+            randMotionBtn.type = "button";
+            randMotionBtn.textContent = String.fromCodePoint(0x1F3B2) + " Randomize Motion";
+            randMotionBtn.onclick = () => randomizeMotion();
+
+            let mrSmooth = document.createElement("label"); mrSmooth.className = "seq-mr-opt";
+            let mrSmoothCk = document.createElement("input"); mrSmoothCk.type = "checkbox";
+            mrSmoothCk.onchange = () => { seqMotionRnd.smooth = mrSmoothCk.checked; };
+            mrSmooth.append(mrSmoothCk, document.createTextNode(" smooth"));
+
+            let mrRangeLbl = document.createElement("span"); mrRangeLbl.className = "seq-mr-opt"; mrRangeLbl.textContent = "range";
+            let mrMin = document.createElement("input"); mrMin.type = "number"; mrMin.min = "0"; mrMin.max = "127"; mrMin.value = "0"; mrMin.style.width = "3.4em";
+            mrMin.oninput = () => { seqMotionRnd.min = Number(mrMin.value); };
+            let mrDash = document.createElement("span"); mrDash.textContent = String.fromCodePoint(0x2013);
+            let mrMax = document.createElement("input"); mrMax.type = "number"; mrMax.min = "0"; mrMax.max = "127"; mrMax.value = "127"; mrMax.style.width = "3.4em";
+            mrMax.oninput = () => { seqMotionRnd.max = Number(mrMax.value); };
+
+            let mrOnly = document.createElement("label"); mrOnly.className = "seq-mr-opt";
+            let mrOnlyCk = document.createElement("input"); mrOnlyCk.type = "checkbox";
+            mrOnlyCk.onchange = () => { seqMotionRnd.onlyEnabled = mrOnlyCk.checked; };
+            mrOnly.append(mrOnlyCk, document.createTextNode(" enabled only"));
+
+            let rndGroup = document.createElement("span");
+            rndGroup.className = "seq-rndmotion";
+            rndGroup.append(randMotionBtn, mrSmooth, mrRangeLbl, mrMin, mrDash, mrMax, mrOnly);
+
             let clearBtn = document.createElement("button");
             clearBtn.type = "button";
             clearBtn.textContent = "Clear";
@@ -221,7 +250,7 @@
             densityInput.type = "range"; densityInput.min = "0"; densityInput.max = "100";
             densityInput.value = "35"; densityInput.id = "seqDensity";
 
-            transport.append(playBtn, tempoLabel, tempoInput, modeLabel, modeSelect, chLabel, chInput, randBtn, clearBtn, exportSingleBtn, exportSplitBtn, densityLabel, densityInput);
+            transport.append(playBtn, tempoLabel, tempoInput, modeLabel, modeSelect, chLabel, chInput, randBtn, rndGroup, clearBtn, exportSingleBtn, exportSplitBtn, densityLabel, densityInput);
             root.appendChild(transport);
 
             let grid = document.createElement("div");
@@ -295,6 +324,7 @@
                     sl.title = "step " + (s + 1);
                     sl.oninput = () => { seqMotion[pp].values[ss] = Number(sl.value); };
                     mRow.appendChild(sl);
+                    seqMotion[pp].sliders.push(sl);
                 }
                 mLane.appendChild(mRow);
                 grid.appendChild(mLane);
@@ -326,6 +356,23 @@
                     seqGrid[p][s] = false;
                     seqCells[p][s].classList.remove("on");
                 }
+        };
+
+        let randomizeMotion = () => {
+            let lo = Math.max(0, Math.min(127, Number.isFinite(seqMotionRnd.min) ? seqMotionRnd.min : 0));
+            let hi = Math.max(0, Math.min(127, Number.isFinite(seqMotionRnd.max) ? seqMotionRnd.max : 127));
+            if (lo > hi) { let t = lo; lo = hi; hi = t; }
+            let maxDelta = Math.max(1, Math.round((hi - lo) / 4));
+            for (let p = 0; p < SEQ_PARTS; p++) {
+                if (seqMotionRnd.onlyEnabled && !seqMotion[p].on) continue;
+                let v = randomInt(lo, hi);
+                for (let s = 0; s < SEQ_STEPS; s++) {
+                    let val = seqMotionRnd.smooth ? v : randomInt(lo, hi);
+                    seqMotion[p].values[s] = val;
+                    if (seqMotion[p].sliders[s]) seqMotion[p].sliders[s].value = val;
+                    v = Math.max(lo, Math.min(hi, v + randomInt(-maxDelta, maxDelta)));
+                }
+            }
         };
 
         let randomizePattern = () => {
