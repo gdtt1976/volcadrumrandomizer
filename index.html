@@ -28,6 +28,9 @@
         #patternMaker .seq-motion-slider.seq-beat { outline:1px solid #cbb; outline-offset:1px; }
         #patternMaker .seq-rndmotion { display:inline-flex; align-items:center; gap:0.35em; flex-wrap:wrap; }
         #patternMaker .seq-rndmotion .seq-mr-opt { font-size:0.8em; }
+        #patternMaker .seq-len { display:inline-flex; align-items:center; gap:0.25em; margin-left:8px; flex:0 0 auto; }
+        #patternMaker .seq-len-lbl { font-size:0.7em; color:#555; }
+        #patternMaker .seq-len-slider { width:72px; }
     </style>
     <script src="./ccynthmata.js" type="text/javascript"></script>
     <script src="./init_patch.js" type="text/javascript"></script>
@@ -131,7 +134,9 @@
         let seqChannel = 1;                               // single-mode MIDI channel (1-16)
         const SEQ_LOOKAHEAD_MS = 25;
         const SEQ_SCHEDULE_AHEAD = 0.12;
-        const SEQ_GATE = 0.5;          // note length as fraction of a step
+        const SEQ_GATE = 0.5;          // default note length as fraction of a step
+        const SEQ_LEN_MIN = 0.05, SEQ_LEN_MAX = 4.0;   // per-part note length range, in steps
+        let seqLength = [];            // per part: note length in steps
         let seqGrid = [];
         let seqCells = [];
         let seqMotion = [];            // per part: {on, cc, values:[16], _last, sliders}
@@ -158,6 +163,7 @@
             let root = document.getElementById("patternMaker");
             if (!root) return;
             seqGrid = Array.from({ length: SEQ_PARTS }, () => Array(SEQ_STEPS).fill(false));
+            seqLength = Array(SEQ_PARTS).fill(SEQ_GATE);
             seqMotion = Array.from({ length: SEQ_PARTS }, () => ({ on: false, cc: 17, values: Array(SEQ_STEPS).fill(64), _last: null, sliders: [] }));
 
             let status = document.createElement("div");
@@ -284,6 +290,20 @@
                     row.appendChild(cell);
                     rowCells.push(cell);
                 }
+                let lenWrap = document.createElement("span");
+                lenWrap.className = "seq-len";
+                let lenLbl = document.createElement("span");
+                lenLbl.className = "seq-len-lbl";
+                lenLbl.textContent = "len";
+                let lenSl = document.createElement("input");
+                lenSl.type = "range"; lenSl.min = "0"; lenSl.max = "127";
+                lenSl.value = Math.round((SEQ_GATE - SEQ_LEN_MIN) / (SEQ_LEN_MAX - SEQ_LEN_MIN) * 127);
+                lenSl.className = "seq-len-slider";
+                lenSl.title = "note length (Part " + (p + 1) + ")";
+                lenSl.oninput = () => { seqLength[pp] = SEQ_LEN_MIN + (Number(lenSl.value) / 127) * (SEQ_LEN_MAX - SEQ_LEN_MIN); };
+                lenWrap.append(lenLbl, lenSl);
+                row.appendChild(lenWrap);
+
                 grid.appendChild(row);
                 seqCells.push(rowCells);
 
@@ -449,12 +469,12 @@
         let exportPatternSingle = () => {
             if (!seqPatternHasHits()) { alert("Pattern is empty - add some steps first."); return; }
             const stepTicks = SEQ_PPQ / 4;
-            const gateTicks = Math.max(1, Math.floor(stepTicks * SEQ_GATE));
             let events = [];
             for (let s = 0; s < SEQ_STEPS; s++)
                 for (let p = 0; p < SEQ_PARTS; p++)
                     if (seqGrid[p][s]) {
                         let ch = seqChannel - 1, note = SEQ_PART_NOTES[p];
+                        let gateTicks = Math.max(1, Math.round(stepTicks * seqLength[p]));
                         events.push({ tick: s * stepTicks, ord: 2, bytes: [0x90 | (ch & 0x0f), note & 0x7f, SEQ_VELOCITY & 0x7f] });
                         events.push({ tick: s * stepTicks + gateTicks, ord: 1, bytes: [0x80 | (ch & 0x0f), note & 0x7f, 0] });
                     }
@@ -466,9 +486,9 @@
         let exportPatternSplit = () => {
             if (!seqPatternHasHits()) { alert("Pattern is empty - add some steps first."); return; }
             const stepTicks = SEQ_PPQ / 4;
-            const gateTicks = Math.max(1, Math.floor(stepTicks * SEQ_GATE));
             let tracks = [[...seqTempoMeta(), 0x00,0xFF,0x2F,0x00]];   // conductor track
             for (let p = 0; p < SEQ_PARTS; p++) {
+                let gateTicks = Math.max(1, Math.round(stepTicks * seqLength[p]));
                 let events = [];
                 for (let s = 0; s < SEQ_STEPS; s++)
                     if (seqGrid[p][s]) {
@@ -529,7 +549,6 @@
             let port = (typeof cynth !== "undefined") ? cynth.selectedMidiPort : null;
             let deltaMs = (time - seqAudioCtx.currentTime) * 1000;
             let sendAt = performance.now() + deltaMs;
-            let gateMs = secondsPerStep * 1000 * SEQ_GATE;
 
             if (port) {
                 for (let p = 0; p < SEQ_PARTS; p++) {
@@ -544,6 +563,7 @@
                     if (seqGrid[p][step]) {
                         let ch = (seqMode === "split") ? p : (seqChannel - 1);
                         let note = (seqMode === "split") ? SEQ_SPLIT_NOTE : SEQ_PART_NOTES[p];
+                        let gateMs = secondsPerStep * 1000 * seqLength[p];
                         port.send([0x90 | (ch & 0x0f), note, SEQ_VELOCITY], sendAt);
                         port.send([0x80 | (ch & 0x0f), note, 0], sendAt + gateMs);
                     }
