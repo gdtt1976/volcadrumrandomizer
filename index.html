@@ -135,12 +135,10 @@
         const SEQ_LOOKAHEAD_MS = 25;
         const SEQ_SCHEDULE_AHEAD = 0.12;
         const SEQ_GATE = 0.5;          // default note length as fraction of a step
-        const SEQ_LEN_MIN = 0.05, SEQ_LEN_MAX = 4.0;   // per-part note length range, in steps
-        let seqLength = [];            // per part: note length in steps
         let seqGrid = [];
         let seqCells = [];
         let seqMotion = [];            // per part: {on, cc, values:[16], _last, sliders}
-        let seqMotionRnd = { smooth: false, min: 0, max: 127, onlyEnabled: false };
+        let seqMotionRnd = { smooth: false, min: 0, max: 127, onlyEnabled: false, params: false };
         const SEQ_MOTION_PARAMS = [
             {label:"Level 1", cc:17}, {label:"Level 2", cc:18},
             {label:"Pitch 1", cc:26}, {label:"Pitch 2", cc:27},
@@ -163,7 +161,6 @@
             let root = document.getElementById("patternMaker");
             if (!root) return;
             seqGrid = Array.from({ length: SEQ_PARTS }, () => Array(SEQ_STEPS).fill(false));
-            seqLength = Array(SEQ_PARTS).fill(SEQ_GATE);
             seqMotion = Array.from({ length: SEQ_PARTS }, () => ({ on: false, cc: 17, values: Array(SEQ_STEPS).fill(64), _last: null, sliders: [] }));
 
             let status = document.createElement("div");
@@ -231,9 +228,14 @@
             mrOnlyCk.onchange = () => { seqMotionRnd.onlyEnabled = mrOnlyCk.checked; };
             mrOnly.append(mrOnlyCk, document.createTextNode(" enabled only"));
 
+            let mrParam = document.createElement("label"); mrParam.className = "seq-mr-opt";
+            let mrParamCk = document.createElement("input"); mrParamCk.type = "checkbox";
+            mrParamCk.onchange = () => { seqMotionRnd.params = mrParamCk.checked; };
+            mrParam.append(mrParamCk, document.createTextNode(" params"));
+
             let rndGroup = document.createElement("span");
             rndGroup.className = "seq-rndmotion";
-            rndGroup.append(randMotionBtn, mrSmooth, mrRangeLbl, mrMin, mrDash, mrMax, mrOnly);
+            rndGroup.append(randMotionBtn, mrSmooth, mrRangeLbl, mrMin, mrDash, mrMax, mrOnly, mrParam);
 
             let clearBtn = document.createElement("button");
             clearBtn.type = "button";
@@ -294,13 +296,20 @@
                 lenWrap.className = "seq-len";
                 let lenLbl = document.createElement("span");
                 lenLbl.className = "seq-len-lbl";
-                lenLbl.textContent = "len";
+                lenLbl.textContent = "length";
                 let lenSl = document.createElement("input");
                 lenSl.type = "range"; lenSl.min = "0"; lenSl.max = "127";
-                lenSl.value = Math.round((SEQ_GATE - SEQ_LEN_MIN) / (SEQ_LEN_MAX - SEQ_LEN_MIN) * 127);
+                let rel1 = document.getElementById("p" + (pp + 1) + "egrelease1");
+                lenSl.value = (rel1 && rel1.value !== "") ? rel1.value : 64;
                 lenSl.className = "seq-len-slider";
-                lenSl.title = "note length (Part " + (p + 1) + ")";
-                lenSl.oninput = () => { seqLength[pp] = SEQ_LEN_MIN + (Number(lenSl.value) / 127) * (SEQ_LEN_MAX - SEQ_LEN_MIN); };
+                lenSl.title = "sound length (Part " + (pp + 1) + ") - sets EG Release on both layers";
+                lenSl.oninput = () => {
+                    let v = Number(lenSl.value);
+                    ["egrelease1", "egrelease2"].forEach((suf) => {
+                        let el = document.getElementById("p" + (pp + 1) + suf);
+                        if (el) { el.value = v; el.dispatchEvent(new Event("input", { bubbles: true })); }
+                    });
+                };
                 lenWrap.append(lenLbl, lenSl);
                 row.appendChild(lenWrap);
 
@@ -327,6 +336,7 @@
                 });
                 mSelect.value = seqMotion[pp].cc;
                 mSelect.onchange = () => { seqMotion[pp].cc = Number(mSelect.value); };
+                seqMotion[pp].select = mSelect;
                 mHead.append(mEnable, mSelect);
                 mLane.appendChild(mHead);
 
@@ -385,6 +395,11 @@
             let maxDelta = Math.max(1, Math.round((hi - lo) / 4));
             for (let p = 0; p < SEQ_PARTS; p++) {
                 if (seqMotionRnd.onlyEnabled && !seqMotion[p].on) continue;
+                if (seqMotionRnd.params) {
+                    let prm = SEQ_MOTION_PARAMS[randomInt(0, SEQ_MOTION_PARAMS.length - 1)];
+                    seqMotion[p].cc = prm.cc;
+                    if (seqMotion[p].select) seqMotion[p].select.value = String(prm.cc);
+                }
                 let v = randomInt(lo, hi);
                 for (let s = 0; s < SEQ_STEPS; s++) {
                     let val = seqMotionRnd.smooth ? v : randomInt(lo, hi);
@@ -474,7 +489,7 @@
                 for (let p = 0; p < SEQ_PARTS; p++)
                     if (seqGrid[p][s]) {
                         let ch = seqChannel - 1, note = SEQ_PART_NOTES[p];
-                        let gateTicks = Math.max(1, Math.round(stepTicks * seqLength[p]));
+                        let gateTicks = Math.max(1, Math.floor(stepTicks * SEQ_GATE));
                         events.push({ tick: s * stepTicks, ord: 2, bytes: [0x90 | (ch & 0x0f), note & 0x7f, SEQ_VELOCITY & 0x7f] });
                         events.push({ tick: s * stepTicks + gateTicks, ord: 1, bytes: [0x80 | (ch & 0x0f), note & 0x7f, 0] });
                     }
@@ -488,7 +503,7 @@
             const stepTicks = SEQ_PPQ / 4;
             let tracks = [[...seqTempoMeta(), 0x00,0xFF,0x2F,0x00]];   // conductor track
             for (let p = 0; p < SEQ_PARTS; p++) {
-                let gateTicks = Math.max(1, Math.round(stepTicks * seqLength[p]));
+                let gateTicks = Math.max(1, Math.floor(stepTicks * SEQ_GATE));
                 let events = [];
                 for (let s = 0; s < SEQ_STEPS; s++)
                     if (seqGrid[p][s]) {
@@ -563,7 +578,7 @@
                     if (seqGrid[p][step]) {
                         let ch = (seqMode === "split") ? p : (seqChannel - 1);
                         let note = (seqMode === "split") ? SEQ_SPLIT_NOTE : SEQ_PART_NOTES[p];
-                        let gateMs = secondsPerStep * 1000 * seqLength[p];
+                        let gateMs = secondsPerStep * 1000 * SEQ_GATE;
                         port.send([0x90 | (ch & 0x0f), note, SEQ_VELOCITY], sendAt);
                         port.send([0x80 | (ch & 0x0f), note, 0], sendAt + gateMs);
                     }
