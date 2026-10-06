@@ -83,17 +83,24 @@
         const KEEP_AUDIBLE = true;
 
         let randomizeAll = () => {
+            // "amount" from the Randomize All % slider: 0 = no change, 1 = full random.
+            let amtEl = document.getElementById("rndAmt");
+            let amt = amtEl ? Number(amtEl.value) / 100 : 1;
+
             // Radio groups: Sound Source, Mod Type, Amp EG, Waveguide Model.
-            // Pick one winner per group FIRST, then fire events, so the shared
-            // SELECT CC (wave+mod+env summed per layer) settles on its final total.
+            // Each group has an `amt` chance of being re-rolled; the shared SELECT CC
+            // (wave+mod+env summed per layer) re-settles when any of its groups fires.
             let groups = {};
             document.querySelectorAll('input.midicctotal[type="radio"]').forEach((r) => {
                 (groups[r.name] = groups[r.name] || []).push(r);
             });
-            let winners = Object.values(groups).map((opts) => {
-                let w = opts[randomInt(0, opts.length - 1)];
-                w.checked = true;
-                return w;
+            let winners = [];
+            Object.values(groups).forEach((opts) => {
+                if (Math.random() < amt) {
+                    let w = opts[randomInt(0, opts.length - 1)];
+                    w.checked = true;
+                    winners.push(w);
+                }
             });
             winners.forEach(fireEvents);
 
@@ -103,31 +110,31 @@
             let relLo = pct("egRelMin", 0), relHi = pct("egRelMax", 127); if (relLo > relHi) { let t = relLo; relLo = relHi; relHi = t; }
             let pchLo = pct("pchMin", 0), pchHi = pct("pchMax", 127); if (pchLo > pchHi) { let t = pchLo; pchLo = pchHi; pchHi = t; }
 
-            // Continuous sliders (Level, Pitch, EG, Mod, all Processing knobs).
+            // Continuous sliders: move each one `amt` of the way toward a random target.
             document.querySelectorAll('input.midiccparam[type="range"]').forEach((s) => {
-                let v;
-                if (/egattack/i.test(s.id)) v = randomInt(atkLo, atkHi);
-                else if (/egrelease/i.test(s.id)) v = randomInt(relLo, relHi);
-                else if (/pitch/i.test(s.id)) v = randomInt(pchLo, pchHi);
+                let target;
+                if (/egattack/i.test(s.id)) target = randomInt(atkLo, atkHi);
+                else if (/egrelease/i.test(s.id)) target = randomInt(relLo, relHi);
+                else if (/pitch/i.test(s.id)) target = randomInt(pchLo, pchHi);
                 else {
                     let lo = Number(s.min) || 0;
                     let hi = Number(s.max) || 127;
                     if (KEEP_AUDIBLE && /level/i.test(s.id)) lo = Math.round(hi * 0.4);
-                    v = randomInt(lo, hi);
+                    target = randomInt(lo, hi);
                 }
-                s.value = v;
+                let cur = Number(s.value) || 0;
+                s.value = Math.round(cur + (target - cur) * amt);
                 fireEvents(s);
             });
 
-            // Checkboxes (Pitch Quantization).
+            // Checkboxes (Pitch Quantization): re-roll with probability `amt`.
             document.querySelectorAll('input.midicctotal[type="checkbox"]').forEach((c) => {
-                c.checked = Math.random() < 0.5;
-                fireEvents(c);
+                if (Math.random() < amt) { c.checked = Math.random() < 0.5; fireEvents(c); }
             });
 
             // Optional: name the kit. Delete this block if you don't want it.
             let nameField = document.getElementById("ccynthmataPatchName");
-            if (nameField) {
+            if (nameField && amt > 0) {
                 let a = ["Broken","Molten","Velvet","Rusted","Neon","Hollow","Warped","Static","Lunar","Concrete"];
                 let b = ["Kick","Circuit","Rain","Machine","Pulse","Bloom","Fracture","Drift","Engine","Ghost"];
                 nameField.value = a[randomInt(0, a.length-1)] + " " + b[randomInt(0, b.length-1)];
@@ -769,6 +776,9 @@
                         style="padding:0.6em 1.2em; font-family:inherit; font-size:1em; cursor:pointer;">
                     &#127922; Randomize All
                 </button>
+                <span id="rndAmtWrap" style="margin-left:0.8em; font-size:0.85em;">amount: <span id="rndAmtLbl">100</span>%
+                    <input type="range" id="rndAmt" min="0" max="100" value="100" style="vertical-align:middle; width:120px;" oninput="document.getElementById('rndAmtLbl').textContent=this.value">
+                </span>
                 <div id="egRandRanges">
                     <div class="egrange">
                         <span class="egrange-lbl">EG Attack range: <span id="egAtkMinLbl">0</span>%&ndash;<span id="egAtkMaxLbl">100</span>%</span>
