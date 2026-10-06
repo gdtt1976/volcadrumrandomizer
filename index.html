@@ -35,6 +35,11 @@
         #patternMaker .seq-clock { display:flex; align-items:center; gap:0.4em; flex-wrap:wrap; font-size:0.85em; margin:4px 0 8px 0; }
         #patternMaker .seq-clock select { font-family:inherit; font-size:1em; }
         #patternMaker .seq-clock-status { color:#555; }
+        #patternMaker .seq-mute { padding:0 5px; font-size:0.75em; line-height:1.3; cursor:pointer; border:1px solid #999; border-radius:3px; background:#f4f4f4; color:#555; }
+        #patternMaker .seq-mute.muted { background:#b8431f; color:#fff; border-color:#8f3317; }
+        #patternMaker .seq-row.row-muted .seq-cell { opacity:0.4; }
+        #patternMaker .seq-cell.seq-inactive, #patternMaker .seq-motion-slider.seq-inactive { opacity:0.25; }
+        #patternMaker .seq-cell.seq-inactive { pointer-events:none; }
         #wgLfoPanel .wglfo-row { display:flex; align-items:center; gap:0.4em; flex-wrap:wrap; margin:3px 0; }
         #wgLfoPanel .wglfo-row > label { min-width:5em; font-size:0.85em; }
         #wgLfoPanel .wglfo-row input[type=range] { width:80px; }
@@ -154,7 +159,9 @@
         // ---------------------------------------------------------------------
 
         // --- Pattern maker / step sequencer ----------------------------------
-        const SEQ_STEPS = 16;
+        const SEQ_STEPS = 32;        // maximum steps (grid is always built this wide)
+        let seqLen = 16;             // active sequence length (4..32), set by the length slider
+        let seqMute = [];            // per part: muted?
         const SEQ_PARTS = 6;
         // Volca SPLIT mode: each part on its own channel (1-6), any note triggers it.
         // Volca SINGLE-channel mode: all parts on one channel, selected by note C3 D3 E3 F3 G3 A3.
@@ -193,6 +200,7 @@
             if (!root) return;
             seqGrid = Array.from({ length: SEQ_PARTS }, () => Array(SEQ_STEPS).fill(false));
             seqMotion = Array.from({ length: SEQ_PARTS }, () => ({ on: false, cc: 17, values: Array(SEQ_STEPS).fill(64), _last: null, sliders: [] }));
+            seqMute = Array(SEQ_PARTS).fill(false);
 
             let status = document.createElement("div");
             status.className = "seq-status";
@@ -214,6 +222,15 @@
             tempoInput.type = "number"; tempoInput.min = "40"; tempoInput.max = "300";
             tempoInput.value = seqTempo; tempoInput.style.width = "4.5em";
             tempoInput.oninput = () => { seqTempo = Number(tempoInput.value) || 120; };
+
+            let lenLabel = document.createElement("label");
+            lenLabel.textContent = "Steps ";
+            let lenOut = document.createElement("span"); lenOut.textContent = seqLen; lenOut.style.minWidth = "1.6em"; lenOut.style.display = "inline-block";
+            let lenInput = document.createElement("input");
+            lenInput.type = "range"; lenInput.min = "4"; lenInput.max = String(SEQ_STEPS); lenInput.step = "1";
+            lenInput.value = seqLen; lenInput.style.width = "130px"; lenInput.style.verticalAlign = "middle";
+            lenInput.oninput = () => { seqLen = Number(lenInput.value); lenOut.textContent = seqLen; applySeqLen(); };
+            lenLabel.append(lenOut, lenInput);
 
             let modeLabel = document.createElement("label");
             modeLabel.textContent = "Mode ";
@@ -289,7 +306,7 @@
             densityInput.type = "range"; densityInput.min = "0"; densityInput.max = "100";
             densityInput.value = "35"; densityInput.id = "seqDensity";
 
-            transport.append(playBtn, tempoLabel, tempoInput, modeLabel, modeSelect, chLabel, chInput, randBtn, rndGroup, clearBtn, exportSingleBtn, exportSplitBtn, densityLabel, densityInput);
+            transport.append(playBtn, tempoLabel, tempoInput, lenLabel, modeLabel, modeSelect, chLabel, chInput, randBtn, rndGroup, clearBtn, exportSingleBtn, exportSplitBtn, densityLabel, densityInput);
             root.appendChild(transport);
 
             let clkRow = document.createElement("div");
@@ -336,7 +353,13 @@
 
                 let label = document.createElement("span");
                 label.className = "seq-rowlabel";
-                label.textContent = "Part " + (p + 1) + " ";
+                let muteBtn = document.createElement("button");
+                muteBtn.type = "button";
+                muteBtn.className = "seq-mute";
+                muteBtn.textContent = "M";
+                muteBtn.title = "Mute Part " + (p + 1);
+                muteBtn.onclick = () => { seqMute[pp] = !seqMute[pp]; muteBtn.classList.toggle("muted", seqMute[pp]); row.classList.toggle("row-muted", seqMute[pp]); };
+                label.append(muteBtn, document.createTextNode(" P" + (p + 1) + " "));
                 let mBtn = document.createElement("button");
                 mBtn.type = "button";
                 mBtn.className = "seq-motion-toggle";
@@ -406,6 +429,7 @@
                 mBtn.onclick = () => { mLane.style.display = (mLane.style.display === "none") ? "" : "none"; };
             }
             root.appendChild(grid);
+            applySeqLen();
 
             updateSeqMidiStatus();
             setInterval(updateSeqMidiStatus, 800);
@@ -430,6 +454,16 @@
                     let tag = seqClockRun ? "" : " [seq off]";
                     cel.textContent = (seqPlaying ? ("~" + seqBpmFromClock() + " BPM from " + seqClockInput.name)
                                                   : ("waiting for start (" + seqClockInput.name + ")")) + tag;
+                }
+            }
+        };
+
+        let applySeqLen = () => {
+            for (let p = 0; p < SEQ_PARTS; p++) {
+                for (let s = 0; s < SEQ_STEPS; s++) {
+                    let inactive = s >= seqLen;
+                    if (seqCells[p] && seqCells[p][s]) seqCells[p][s].classList.toggle("seq-inactive", inactive);
+                    if (seqMotion[p] && seqMotion[p].sliders[s]) seqMotion[p].sliders[s].classList.toggle("seq-inactive", inactive);
                 }
             }
         };
@@ -469,7 +503,7 @@
             let density = (el ? Number(el.value) : 35) / 100;
             for (let p = 0; p < SEQ_PARTS; p++)
                 for (let s = 0; s < SEQ_STEPS; s++) {
-                    let on = Math.random() < density;
+                    let on = (s < seqLen) && (Math.random() < density);
                     seqGrid[p][s] = on;
                     seqCells[p][s].classList.toggle("on", on);
                 }
@@ -528,9 +562,11 @@
         };
 
         let seqPatternHasHits = () => {
-            for (let p = 0; p < SEQ_PARTS; p++)
-                for (let s = 0; s < SEQ_STEPS; s++)
+            for (let p = 0; p < SEQ_PARTS; p++) {
+                if (seqMute[p]) continue;
+                for (let s = 0; s < seqLen; s++)
                     if (seqGrid[p][s]) return true;
+            }
             return false;
         };
 
@@ -539,9 +575,9 @@
             if (!seqPatternHasHits()) { alert("Pattern is empty - add some steps first."); return; }
             const stepTicks = SEQ_PPQ / 4;
             let events = [];
-            for (let s = 0; s < SEQ_STEPS; s++)
+            for (let s = 0; s < seqLen; s++)
                 for (let p = 0; p < SEQ_PARTS; p++)
-                    if (seqGrid[p][s]) {
+                    if (seqGrid[p][s] && !seqMute[p]) {
                         let ch = seqChannel - 1, note = SEQ_PART_NOTES[p];
                         let gateTicks = Math.max(1, Math.floor(stepTicks * SEQ_GATE));
                         events.push({ tick: s * stepTicks, ord: 2, bytes: [0x90 | (ch & 0x0f), note & 0x7f, SEQ_VELOCITY & 0x7f] });
@@ -559,14 +595,15 @@
             for (let p = 0; p < SEQ_PARTS; p++) {
                 let gateTicks = Math.max(1, Math.floor(stepTicks * SEQ_GATE));
                 let events = [];
-                for (let s = 0; s < SEQ_STEPS; s++)
+                if (!seqMute[p])
+                for (let s = 0; s < seqLen; s++)
                     if (seqGrid[p][s]) {
                         events.push({ tick: s * stepTicks, ord: 2, bytes: [0x90 | (p & 0x0f), SEQ_SPLIT_NOTE, SEQ_VELOCITY & 0x7f] });
                         events.push({ tick: s * stepTicks + gateTicks, ord: 1, bytes: [0x80 | (p & 0x0f), SEQ_SPLIT_NOTE, 0] });
                     }
-                if (seqMotion[p].on) {
+                if (seqMotion[p].on && !seqMute[p]) {
                     let lastV = null;
-                    for (let s = 0; s < SEQ_STEPS; s++) {
+                    for (let s = 0; s < seqLen; s++) {
                         let v = seqMotion[p].values[s] & 0x7f;
                         if (v !== lastV) {
                             events.push({ tick: s * stepTicks, ord: 0, bytes: [0xB0 | (p & 0x0f), seqMotion[p].cc & 0x7f, v] });
@@ -610,7 +647,7 @@
             while (seqNextStepTime < seqAudioCtx.currentTime + SEQ_SCHEDULE_AHEAD) {
                 scheduleStep(seqCurrentStep, seqNextStepTime, secondsPerStep);
                 seqNextStepTime += secondsPerStep;
-                seqCurrentStep = (seqCurrentStep + 1) % SEQ_STEPS;
+                seqCurrentStep = (seqCurrentStep + 1) % seqLen;
             }
         };
 
@@ -618,6 +655,7 @@
             let port = (typeof cynth !== "undefined") ? cynth.selectedMidiPort : null;
             if (!port) return;
             for (let p = 0; p < SEQ_PARTS; p++) {
+                if (seqMute[p]) continue;
                 if (seqMotion[p].on) {
                     let v = seqMotion[p].values[step] & 0x7f;
                     if (v !== seqMotion[p]._last) {
@@ -698,7 +736,7 @@
                     seqClkCount = 0;
                     emitStep(seqCurrentStep, performance.now(), seqClkInterval * SEQ_CLOCKS_PER_STEP * SEQ_GATE);
                     showPlayhead(seqCurrentStep);
-                    seqCurrentStep = (seqCurrentStep + 1) % SEQ_STEPS;
+                    seqCurrentStep = (seqCurrentStep + 1) % seqLen;
                 }
             } else if (d === 0xFA) {                // start
                 if (!seqClockSync) return;
