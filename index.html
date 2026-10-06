@@ -101,12 +101,14 @@
             let pct = (id, dflt) => { let el = document.getElementById(id); return el ? Math.round(Number(el.value) / 100 * 127) : dflt; };
             let atkLo = pct("egAtkMin", 0), atkHi = pct("egAtkMax", 127); if (atkLo > atkHi) { let t = atkLo; atkLo = atkHi; atkHi = t; }
             let relLo = pct("egRelMin", 0), relHi = pct("egRelMax", 127); if (relLo > relHi) { let t = relLo; relLo = relHi; relHi = t; }
+            let pchLo = pct("pchMin", 0), pchHi = pct("pchMax", 127); if (pchLo > pchHi) { let t = pchLo; pchLo = pchHi; pchHi = t; }
 
             // Continuous sliders (Level, Pitch, EG, Mod, all Processing knobs).
             document.querySelectorAll('input.midiccparam[type="range"]').forEach((s) => {
                 let v;
                 if (/egattack/i.test(s.id)) v = randomInt(atkLo, atkHi);
                 else if (/egrelease/i.test(s.id)) v = randomInt(relLo, relHi);
+                else if (/pitch/i.test(s.id)) v = randomInt(pchLo, pchHi);
                 else {
                     let lo = Number(s.min) || 0;
                     let hi = Number(s.max) || 127;
@@ -278,29 +280,36 @@
 
             let clkRow = document.createElement("div");
             clkRow.className = "seq-clock";
-            let clkEnable = document.createElement("label");
-            let clkCk = document.createElement("input"); clkCk.type = "checkbox";
-            clkEnable.append(clkCk, document.createTextNode(" sync to external clock (Ableton) "));
-            let clkSelect = document.createElement("select"); clkSelect.id = "seqClockSelect";
+            let clkLbl = document.createElement("span"); clkLbl.textContent = "Clock: ";
+            let clkMode = document.createElement("select"); clkMode.id = "seqClockMode";
+            [["internal", "internal"], ["ext-play", "external sync - sequencer plays"], ["ext-off", "external sync - sequencer off"]].forEach(([v, t]) => {
+                let o = document.createElement("option"); o.value = v; o.textContent = t; clkMode.appendChild(o);
+            });
+            let clkSelect = document.createElement("select"); clkSelect.id = "seqClockSelect"; clkSelect.style.display = "none";
             let clkOpt0 = document.createElement("option"); clkOpt0.value = ""; clkOpt0.textContent = "(choose clock input)"; clkSelect.appendChild(clkOpt0);
             let clkStatus = document.createElement("span"); clkStatus.id = "seqClockStatus"; clkStatus.className = "seq-clock-status";
-            clkCk.onchange = () => {
-                seqClockSync = clkCk.checked;
+
+            let applyClockMode = (mode) => {
+                seqClockSync = (mode !== "internal");
+                seqClockRun = (mode === "ext-play");
                 if (seqClockSync) {
+                    clkSelect.style.display = "";
                     setupClockInputs(clkSelect, clkStatus);
                     if (seqTimer) { clearInterval(seqTimer); seqTimer = null; }
                     seqPlaying = false; clearPlayhead();
                     playBtn.disabled = true; tempoInput.disabled = true;
                     playBtn.textContent = String.fromCodePoint(0x25B6) + " (ext)";
                 } else {
+                    clkSelect.style.display = "none";
                     attachClockInput("");
                     seqPlaying = false; clearPlayhead();
                     playBtn.disabled = false; tempoInput.disabled = false;
                     playBtn.textContent = String.fromCodePoint(0x25B6) + " Play";
                 }
             };
+            clkMode.onchange = () => applyClockMode(clkMode.value);
             clkSelect.onchange = () => { if (seqClockSync) attachClockInput(clkSelect.value); };
-            clkRow.append(clkEnable, clkSelect, clkStatus);
+            clkRow.append(clkLbl, clkMode, clkSelect, clkStatus);
             root.appendChild(clkRow);
 
             let grid = document.createElement("div");
@@ -403,8 +412,11 @@
             if (cel) {
                 if (!seqClockSync) cel.textContent = "";
                 else if (!seqClockInput) cel.textContent = "select the clock input above";
-                else cel.textContent = seqPlaying ? ("playing - ~" + seqBpmFromClock() + " BPM from " + seqClockInput.name)
-                                                  : ("ready - waiting for start (" + seqClockInput.name + ")");
+                else {
+                    let tag = seqClockRun ? "" : " [seq off]";
+                    cel.textContent = (seqPlaying ? ("~" + seqBpmFromClock() + " BPM from " + seqClockInput.name)
+                                                  : ("waiting for start (" + seqClockInput.name + ")")) + tag;
+                }
             }
         };
 
@@ -622,6 +634,7 @@
 
         // --- External MIDI clock sync (slave to Ableton etc.) ----------------
         let seqClockSync = false;
+        let seqClockRun = false;
         let seqClockAccess = null;
         let seqClockInput = null;
         let seqClkCount = 0;
@@ -631,20 +644,22 @@
         let seqBpmFromClock = () => (seqClkInterval > 0) ? Math.round(60000 / (seqClkInterval * 24)) : 0;
 
         let setupClockInputs = (selectEl, statusEl) => {
+            let fill = () => {
+                let cur = selectEl.value;
+                selectEl.innerHTML = "";
+                let none = document.createElement("option"); none.value = ""; none.textContent = "(choose clock input)"; selectEl.appendChild(none);
+                seqClockAccess.inputs.forEach((inp) => {
+                    let o = document.createElement("option"); o.value = inp.id; o.textContent = inp.name; selectEl.appendChild(o);
+                });
+                selectEl.value = cur;
+            };
+            if (seqClockAccess) { fill(); attachClockInput(selectEl.value); return; }
             if (!navigator.requestMIDIAccess) { statusEl.textContent = "Web MIDI not available"; return; }
             navigator.requestMIDIAccess().then((access) => {
                 seqClockAccess = access;
-                let fill = () => {
-                    let cur = selectEl.value;
-                    selectEl.innerHTML = "";
-                    let none = document.createElement("option"); none.value = ""; none.textContent = "(choose clock input)"; selectEl.appendChild(none);
-                    access.inputs.forEach((inp) => {
-                        let o = document.createElement("option"); o.value = inp.id; o.textContent = inp.name; selectEl.appendChild(o);
-                    });
-                    selectEl.value = cur;
-                };
                 fill();
                 access.onstatechange = fill;
+                attachClockInput(selectEl.value);
             }).catch(() => { statusEl.textContent = "Could not access MIDI inputs"; });
         };
 
@@ -663,7 +678,7 @@
                 let now = performance.now();
                 if (seqClkLast) seqClkInterval = now - seqClkLast;
                 seqClkLast = now;
-                if (!seqClockSync || !seqPlaying) return;
+                if (!seqClockSync || !seqPlaying || !seqClockRun) return;
                 seqClkCount++;
                 if (seqClkCount >= SEQ_CLOCKS_PER_STEP) {
                     seqClkCount = 0;
@@ -764,6 +779,11 @@
                         <span class="egrange-lbl">EG Release range: <span id="egRelMinLbl">0</span>%&ndash;<span id="egRelMaxLbl">100</span>%</span>
                         <input type="range" id="egRelMin" min="0" max="100" value="0" oninput="document.getElementById('egRelMinLbl').textContent=this.value">
                         <input type="range" id="egRelMax" min="0" max="100" value="100" oninput="document.getElementById('egRelMaxLbl').textContent=this.value">
+                    </div>
+                    <div class="egrange">
+                        <span class="egrange-lbl">Pitch range: <span id="pchMinLbl">0</span>%&ndash;<span id="pchMaxLbl">100</span>%</span>
+                        <input type="range" id="pchMin" min="0" max="100" value="0" oninput="document.getElementById('pchMinLbl').textContent=this.value">
+                        <input type="range" id="pchMax" min="0" max="100" value="100" oninput="document.getElementById('pchMaxLbl').textContent=this.value">
                     </div>
                 </div>
             </div>
